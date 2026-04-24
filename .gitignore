@@ -1,0 +1,51 @@
+# ===== OS生成ファイル =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ===== エディタ =====
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ===== PHPの一時ファイル =====
+*.log
+*.cache
+error_log
+
+# ===== ローカルテスト用 =====
+/test/
+/tmp/
+local-config.php
+wp-config-local.php
+
+# ===== 配布用アーカイブ(Releasesで自動生成されるため不要) =====
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# ===== 依存関係(今回は未使用、将来のComposer導入時のため) =====
+/vendor/
+composer.lock
+node_modules/
+package-lock.json
+
+# ===== バックアップ =====
+*.bak
+*.backup
+*.old
+*.orig
+
+# ===== 環境変数 =====
+.env
+.env.local
