@@ -2,7 +2,7 @@
 
 WordPressサイト向けの統合セキュリティプラグインです。外部からの不正アクセス対策として、XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7スパム対策を1つのプラグインで管理できます。
 
-- **バージョン**: 2.0.0
+- **バージョン**: 2.4.3
 - **必須環境**: WordPress 5.6以降 / PHP 7.4以降
 - **ライセンス**: GPL v2 or later
 
@@ -16,10 +16,11 @@ WordPressサイト向けの統合セキュリティプラグインです。外�
 4. [インストール手順](#インストール手順)
 5. [導入時の重要作業](#導入時の重要作業)
 6. [各機能の詳細と設定](#各機能の詳細と設定)
-7. [互換性・影響範囲](#互換性影響範囲)
-8. [動作確認方法](#動作確認方法)
-9. [トラブルシューティング](#トラブルシューティング)
-10. [変更履歴](#変更履歴)
+7. [サイト点検モジュール](#サイト点検モジュール)
+8. [互換性・影響範囲](#互換性影響範囲)
+9. [動作確認方法](#動作確認方法)
+10. [トラブルシューティング](#トラブルシューティング)
+11. [変更履歴](#変更履歴)
 
 ---
 
@@ -254,6 +255,85 @@ SELECT user_id, meta_value FROM wp_usermeta WHERE meta_key = '_application_passw
 | 差出人名フィールドID | `your-name` | CF7フォームの差出人名フィールド名 | ✓ 継承 |
 
 **フィールドID**: CF7のフォーム編集画面で `[textarea your-message]` のように記述されている部分の `your-message` がフィールドIDです。フォームの実装に合わせて変更してください。
+
+---
+
+## サイト点検モジュール
+
+v2.1.0 で追加された、外部から派生サイトの状態を取得するための REST API モジュールです。複数の派生サイトを統合的に点検する運用を想定しています。
+
+### 概要
+
+- 外部の点検システムが Bearer トークン認証で `/wp-json/wpsg/v1/inspect/*` にアクセスし、サイトのテーマ・プラグイン・WP情報などを取得する
+- 既存のセキュリティ機能とは独立して動作。一切干渉しません
+- すべての応答は JSON で、レスポンス形式は統一フォーマット
+
+### 設定方法
+
+1. WordPress 管理画面 → 「セキュリティガード」を開く
+2. ページ末尾の「6. サイト点検設定」セクションまでスクロール
+3. 「トークンを生成」ボタンをクリック
+4. 表示された **平文トークンを安全な場所に保管** (1度しか表示されません)
+5. 必要に応じて許可IPリストを設定 (任意)
+
+### エンドポイント
+
+| エンドポイント | 認証 | 用途 |
+|---|---|---|
+| `GET /wp-json/wpsg/v1/inspect/health` | 不要 | 軽量稼働確認 |
+| `GET /wp-json/wpsg/v1/inspect/all` | 必要 | 全項目一括取得 |
+| `GET /wp-json/wpsg/v1/inspect/core` | 必要 | WordPress / PHP / MySQL 情報 |
+| `GET /wp-json/wpsg/v1/inspect/theme` | 必要 | 有効テーマ・親テーマ・更新有無 |
+| `GET /wp-json/wpsg/v1/inspect/plugins` | 必要 | 全プラグイン一覧 + 旧版残存検出 |
+| `GET /wp-json/wpsg/v1/inspect/features` | 必要 | 機能フラグ (保存値・検出値・乖離) |
+| `GET /wp-json/wpsg/v1/inspect/membership` | 必要 | 会員管理プラグイン統合 (UM/WP Full Stripe/WC/WC Vendors/WP Crowdfunding/BankPay) |
+| `GET /wp-json/wpsg/v1/inspect/stripe` | 必要 | 決済設定 (Stripe/PayPal/BankPay、機微情報マスク済み) |
+
+### 認証ヘッダー
+
+```
+Authorization: Bearer <生成されたトークン>
+```
+
+### 動作確認 (curl)
+
+```bash
+# 認証不要のヘルスチェック
+curl https://example.com/wp-json/wpsg/v1/inspect/health
+
+# 認証必要なエンドポイント
+curl -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+     https://example.com/wp-json/wpsg/v1/inspect/core
+```
+
+### セキュリティ要件
+
+| 項目 | 仕様 |
+|---|---|
+| トークン保存 | `wp_hash_password` でハッシュ化し DB 保存 (平文非保持) |
+| トークン長 | 64文字 (英数字) |
+| HTTPS | 推奨 |
+| レート制限 | 1分60リクエスト/IP |
+| 許可IP制限 | 任意設定可 |
+| 機微情報のマスク | 将来追加予定の Stripe 鍵などは設定有無のフラグのみ返却 |
+
+### レスポンス共通フォーマット
+
+```json
+{
+  "success": true,
+  "checked_at": "2026-04-30T14:23:11+09:00",
+  "data": { /* エンドポイントごとのデータ */ },
+  "warnings": [
+    {
+      "level": "warning",
+      "code": "legacy_plugin_residual",
+      "message": "旧版プラグインが残存しています",
+      "details": { "files": ["..."] }
+    }
+  ]
+}
+```
 
 ---
 

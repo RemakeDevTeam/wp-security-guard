@@ -1,12 +1,13 @@
 <?php
 /*
 Plugin Name: WP Security Guard
-Plugin URI: 
-Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策を1プラグインで管理します。
-Version: 2.0.0
-Author: 
+Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
+Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
+Version: 2.5.1
+Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
+Update URI: https://github.com/RemakeDevTeam/wp-security-guard
 */
 
 if (!defined('ABSPATH')) {
@@ -411,6 +412,15 @@ class WPSecurityGuard {
                 submit_button();
                 ?>
             </form>
+            <?php
+            /**
+             * 設定画面の本体下部・閉じ </div> の直前で発火する拡張フック
+             * 点検モジュール (Phase 1〜4) はこのフックでセクションを描画する
+             *
+             * @since 2.4.1
+             */
+            do_action('wpsg_admin_page_extension_render');
+            ?>
         </div>
         <script>
         jQuery(document).ready(function($) {
@@ -480,3 +490,43 @@ class WPSecurityGuard {
 
 // プラグイン初期化
 add_action('plugins_loaded', array('WPSecurityGuard', 'get_instance'));
+
+// 点検モジュールの読み込み(Phase 1で追加)
+require_once __DIR__ . '/includes/class-site-inspector.php';
+add_action('plugins_loaded', array('WPSG_Site_Inspector', 'init'), 11);
+
+/**
+ * 自己ホスト更新チェッカー (plugin-update-checker / GitHub) ★v2.5.0
+ * - 更新元リポジトリは既定で下記。wp-config で define('WPSG_UPDATE_REPO', '...') により上書き可。
+ * - プライベートリポジトリは define('WPSG_UPDATE_TOKEN', 'ghp_xxx') でアクセストークン指定。
+ * - 安定版ブランチを使う場合は define('WPSG_UPDATE_BRANCH', 'main')。既定はGitHubリリースを追跡。
+ */
+require_once __DIR__ . '/includes/lib/plugin-update-checker/plugin-update-checker.php';
+if (class_exists('\\YahnisElsts\\PluginUpdateChecker\\v5\\PucFactory')) {
+    $wpsg_update_repo = defined('WPSG_UPDATE_REPO') ? WPSG_UPDATE_REPO : 'https://github.com/RemakeDevTeam/wp-security-guard/';
+    $wpsg_update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        $wpsg_update_repo,
+        __FILE__,
+        'wp-security-guard'
+    );
+    if (defined('WPSG_UPDATE_TOKEN') && WPSG_UPDATE_TOKEN) {
+        $wpsg_update_checker->setAuthentication(WPSG_UPDATE_TOKEN);
+    }
+    if (defined('WPSG_UPDATE_BRANCH') && WPSG_UPDATE_BRANCH) {
+        $wpsg_update_checker->setBranch(WPSG_UPDATE_BRANCH);
+    }
+}
+
+/**
+ * このプラグイン自身の自動更新を既定でONにする（全サイト手間ゼロ運用）。★v2.5.0
+ * 無効化したい場合は wp-config で define('WPSG_DISABLE_AUTO_UPDATE', true)。
+ */
+add_filter('auto_update_plugin', function ($update, $item) {
+    if (defined('WPSG_DISABLE_AUTO_UPDATE') && WPSG_DISABLE_AUTO_UPDATE) {
+        return $update;
+    }
+    if (is_object($item) && isset($item->slug) && $item->slug === 'wp-security-guard') {
+        return true;
+    }
+    return $update;
+}, 10, 2);
