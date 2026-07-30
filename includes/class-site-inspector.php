@@ -79,13 +79,15 @@ class WPSG_Site_Inspector {
         require_once __DIR__ . '/inspectors/stripe/class-stripe-dispatcher.php';
         require_once __DIR__ . '/inspectors/class-inspector-stripe.php';
 
-        // 管理画面拡張(管理画面でのみ読み込み)
-        if (is_admin()) {
+        // 管理画面拡張（「6. サイト点検設定」「7. サイト機能フラグ管理」）は既定で非表示。★v2.5.2
+        // 点検・プラグイン版取得は集中管理側（remakemanager）で行うため、各サイトのUIは不要。
+        // 再表示が必要になったら: add_filter('wpsg_enable_inspector_admin_ui', '__return_true');
+        if (is_admin() && apply_filters('wpsg_enable_inspector_admin_ui', false)) {
             require_once __DIR__ . '/admin/class-admin-page-extension.php';
             WPSG_Admin_Page_Extension::init();
         }
 
-        // REST API登録
+        // REST API登録（点検エンドポイントは維持＝remakemanager が利用）
         WPSG_Inspect_Rest_Api::init();
     }
 
