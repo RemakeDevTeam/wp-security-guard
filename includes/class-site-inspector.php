@@ -89,6 +89,12 @@ class WPSG_Site_Inspector {
 
         // REST API登録（点検エンドポイントは維持＝remakemanager が利用）
         WPSG_Inspect_Rest_Api::init();
+
+        // プラグイン一覧にシステム略語ラベルを表示（点検UIとは独立）。★v2.5.3
+        if (is_admin()) {
+            require_once __DIR__ . '/admin/class-plugin-labeler.php';
+            WPSG_Plugin_Labeler::init();
+        }
     }
 
     /**
