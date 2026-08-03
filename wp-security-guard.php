@@ -2,8 +2,8 @@
 /*
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
-Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.5.3
+Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
+Version: 2.6.0
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -42,6 +42,17 @@ class WPSecurityGuard {
         'sender_field'           => 'your-name',
         'max_urls'               => 3,
         'min_japanese_chars'     => 5,
+
+        // 会員登録スパム対策 ★v2.6.0
+        'enable_registration_guard'  => 'yes',
+        'block_wp_login_register'    => 'yes',
+        'reg_require_js_token'       => 'yes',
+        'reg_honeypot'               => 'yes',
+        'reg_min_form_seconds'       => 3,
+        'reg_max_per_ip_hour'        => 3,
+        'reg_validate_username'      => 'yes',
+        'reg_suppress_user_email'    => 'no',
+        'reg_suppress_admin_email'   => 'no',
     );
 
     public static function get_instance() {
@@ -63,6 +74,7 @@ class WPSecurityGuard {
         $this->apply_info_hiding();
         $this->apply_auth_hardening();
         $this->apply_cf7_guard();
+        $this->apply_registration_guard(); // ★v2.6.0
 
         // 管理画面
         add_action('admin_menu', array($this, 'add_admin_menu'));
@@ -257,6 +269,291 @@ class WPSecurityGuard {
     }
 
     // =====================================================================
+    // 6. 会員登録スパム対策 ★v2.6.0
+    //    wp-login.php?action=register と WooCommerce /my-account/ の両方に適用。
+    //    JS実行なしのスクリプト型POSTボットを主対象に、多層で遮断する。
+    // =====================================================================
+    private function apply_registration_guard() {
+        if ($this->options['enable_registration_guard'] !== 'yes') {
+            return;
+        }
+
+        // wp-login.php?action=register の遮断（users_can_register の値に依存しない）
+        if ($this->options['block_wp_login_register'] === 'yes') {
+            add_action('login_init', array($this, 'block_wp_login_registration'));
+        }
+
+        // フォームへの防御フィールド出力（WP標準＋WooCommerce）
+        add_action('register_form', array($this, 'render_guard_fields'));
+        add_action('woocommerce_register_form', array($this, 'render_guard_fields'));
+
+        // 検証（両フックとも引数並びは $errors, $sanitized_user_login, $user_email で共通）
+        add_filter('registration_errors', array($this, 'validate_registration'), 10, 3);
+        add_filter('woocommerce_registration_errors', array($this, 'validate_registration'), 10, 3);
+
+        // 登録成功後のレート制限カウンタ更新
+        add_action('user_register', array($this, 'record_registration_ip'));
+
+        // メール抑制
+        if ($this->options['reg_suppress_user_email'] === 'yes') {
+            add_filter('wp_new_user_notification_email', array($this, 'suppress_user_notification'), 10, 3);
+        }
+        if ($this->options['reg_suppress_admin_email'] === 'yes') {
+            add_filter('wp_new_user_notification_email_admin', array($this, 'suppress_admin_notification'), 10, 3);
+        }
+    }
+
+    /**
+     * wp-login.php?action=register を GET/POST 双方で遮断してトップへ。
+     * 登録機能の存在を攻撃者に悟らせないため registration=disabled 等は付けない。
+     */
+    public function block_wp_login_registration() {
+        $action = isset($_REQUEST['action']) ? sanitize_key($_REQUEST['action']) : '';
+        if ($action === 'register') {
+            wp_safe_redirect(home_url('/'), 302);
+            exit;
+        }
+    }
+
+    /**
+     * 3つの防御フィールド（ハニーポット・署名付き時間トラップ・JSトークン）を出力。
+     */
+    public function render_guard_fields() {
+        $ts = time();
+        $hp_name = $this->get_honeypot_field_name();
+
+        // 1. ハニーポット（display:none だと検知されやすいので画面外に飛ばして隠す）
+        if ($this->options['reg_honeypot'] === 'yes') {
+            echo '<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">';
+            echo '<label>' . esc_html__('この欄は入力しないでください', 'wp-security-guard') . '</label>';
+            echo '<input type="text" name="' . esc_attr($hp_name) . '" value="" tabindex="-1" autocomplete="off">';
+            echo '</div>';
+        }
+
+        // 2. 時間トラップ（改ざん防止に署名付き）
+        if (intval($this->options['reg_min_form_seconds']) > 0) {
+            echo '<input type="hidden" name="wpsg_reg_ts" value="' . esc_attr($ts) . '">';
+            echo '<input type="hidden" name="wpsg_reg_sig" value="' . esc_attr($this->sign_timestamp($ts)) . '">';
+        }
+
+        // 3. JSトークン（JS実行なしのボットを排除。最も効果が高い）
+        if ($this->options['reg_require_js_token'] === 'yes') {
+            echo '<input type="hidden" name="wpsg_reg_token" value="">';
+            echo '<script>(function(){var f=document.querySelectorAll(\'input[name="wpsg_reg_token"]\');'
+               . 'for(var i=0;i<f.length;i++){f[i].value=' . wp_json_encode($this->get_js_token()) . ';}})();</script>';
+        }
+    }
+
+    /**
+     * ハニーポットのフィールド名。固定名は学習されるため wp_salt でサイト固有かつ安定にする。
+     */
+    private function get_honeypot_field_name() {
+        return 'wpsg_' . substr(md5('wpsg_hp' . wp_salt('auth')), 0, 12);
+    }
+
+    /**
+     * 時間トラップ用タイムスタンプの HMAC 署名。
+     */
+    private function sign_timestamp($ts) {
+        return hash_hmac('sha256', 'wpsg_reg|' . $ts, wp_salt('auth'));
+    }
+
+    /**
+     * JSトークン（当日分）。1日単位でローテーション（キャッシュ耐性と有効期限のバランス）。
+     */
+    private function get_js_token() {
+        return $this->js_token_for_date(gmdate('Y-m-d'));
+    }
+
+    private function js_token_for_date($date) {
+        return substr(hash_hmac('sha256', 'wpsg_js|' . $date, wp_salt('auth')), 0, 32);
+    }
+
+    /**
+     * JSトークン検証。UTC日付境界をまたぐ送信に備え、当日分・前日分の両方を許可する。
+     */
+    private function verify_js_token($token) {
+        if ($token === '') {
+            return false;
+        }
+        $today     = $this->js_token_for_date(gmdate('Y-m-d'));
+        $yesterday = $this->js_token_for_date(gmdate('Y-m-d', time() - DAY_IN_SECONDS));
+        return hash_equals($today, $token) || hash_equals($yesterday, $token);
+    }
+
+    /**
+     * 会員登録の検証。WP標準・WooCommerce の registration_errors 共通。
+     */
+    public function validate_registration($errors, $sanitized_user_login, $user_email) {
+        // 管理画面からの手動作成は対象外
+        if (is_admin() && current_user_can('create_users')) {
+            return $errors;
+        }
+
+        // 将来の外部CAPTCHAモジュール差し込み口
+        $pre = apply_filters('wpsg_registration_pre_validate', null, $errors, $user_email);
+        if (is_wp_error($pre)) {
+            return $pre;
+        }
+
+        $generic = __('登録処理を完了できませんでした。時間をおいて再度お試しください。', 'wp-security-guard');
+
+        // (1) ハニーポット
+        if ($this->options['reg_honeypot'] === 'yes') {
+            $hp = $this->get_honeypot_field_name();
+            if (!empty($_POST[$hp])) {
+                $this->log_block('honeypot', $user_email);
+                $errors->add('wpsg_hp', $generic);
+                return $errors;
+            }
+        }
+
+        // (2) JSトークン
+        if ($this->options['reg_require_js_token'] === 'yes') {
+            $token = isset($_POST['wpsg_reg_token']) ? sanitize_text_field(wp_unslash($_POST['wpsg_reg_token'])) : '';
+            if (!$this->verify_js_token($token)) {
+                $this->log_block('js_token', $user_email);
+                $errors->add('wpsg_js', __('お使いのブラウザでJavaScriptが無効になっています。有効にしてから再度お試しください。', 'wp-security-guard'));
+                return $errors;
+            }
+        }
+
+        // (3) 時間トラップ（下限のみ。キャッシュ起因の誤検知回避のため上限は見ない）
+        $min_sec = intval($this->options['reg_min_form_seconds']);
+        if ($min_sec > 0) {
+            $ts  = isset($_POST['wpsg_reg_ts'])  ? intval($_POST['wpsg_reg_ts']) : 0;
+            $sig = isset($_POST['wpsg_reg_sig']) ? sanitize_text_field(wp_unslash($_POST['wpsg_reg_sig'])) : '';
+            if (!$ts || !hash_equals($this->sign_timestamp($ts), $sig) || (time() - $ts) < $min_sec) {
+                $this->log_block('time_trap', $user_email);
+                $errors->add('wpsg_time', $generic);
+                return $errors;
+            }
+        }
+
+        // (4) レート制限
+        $max_ip = intval($this->options['reg_max_per_ip_hour']);
+        if ($max_ip > 0 && $this->get_ip_registration_count() >= $max_ip) {
+            $this->log_block('rate_limit', $user_email);
+            $errors->add('wpsg_rate', __('短時間に多数の登録が行われました。しばらく時間をおいてからお試しください。', 'wp-security-guard'));
+            return $errors;
+        }
+
+        // (5) ユーザー名・表示名バリデーション
+        if ($this->options['reg_validate_username'] === 'yes') {
+            $candidates = array($sanitized_user_login);
+            foreach (array('username', 'display_name', 'first_name', 'last_name', 'billing_first_name', 'billing_last_name') as $f) {
+                if (!empty($_POST[$f])) {
+                    $candidates[] = sanitize_text_field(wp_unslash($_POST[$f]));
+                }
+            }
+            foreach ($candidates as $c) {
+                if ($this->looks_like_spam($c)) {
+                    $this->log_block('username_pattern', $user_email);
+                    $errors->add('wpsg_name', __('お名前・ユーザー名に使用できない文字列が含まれています。', 'wp-security-guard'));
+                    return $errors;
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * ユーザー名等がスパム広告文らしいか判定。キーワード・判定結果ともフィルタで上書き可能。
+     */
+    private function looks_like_spam($str) {
+        $is_spam = $this->registration_spam_match($str);
+        return (bool) apply_filters('wpsg_registration_looks_like_spam', $is_spam, $str);
+    }
+
+    private function registration_spam_match($str) {
+        if ($str === '') {
+            return false;
+        }
+
+        // URL・スキーム
+        if (preg_match('#https?://|www\.#i', $str)) {
+            return true;
+        }
+
+        // 使い捨て・不正が多いTLDのドメイン様文字列（例: cj503302.tw1.ru）
+        if (preg_match('/\b[a-z0-9-]+\.(ru|su|tk|ml|ga|cf|gq|xyz|top|club|online|site|icu)\b/i', $str)) {
+            return true;
+        }
+
+        // 3階層以上のドット区切り英数字（サブドメイン付きドメイン様）
+        if (preg_match('/\b[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}\b/i', $str)) {
+            return true;
+        }
+
+        // スパム定型句
+        $keywords = array(
+            'action required', 'bitcoin', 'btc', 'free spins', 'roulette',
+            'casino', 'bonus', 'voucher', 'giveaway', 'crypto', 'nft',
+            'wallet', 'transfer', 'payout', 'claim your', 'you have won',
+            'viagra', 'cialis', 'loan', 'seo service',
+        );
+        $keywords = apply_filters('wpsg_registration_spam_keywords', $keywords);
+        $lower = mb_strtolower($str, 'UTF-8');
+        foreach ($keywords as $kw) {
+            if ($kw !== '' && mb_strpos($lower, $kw) !== false) {
+                return true;
+            }
+        }
+
+        // 過度に長いユーザー名（実測: スパムは40〜60文字。正規顧客は最長20文字程度）
+        if (mb_strlen($str) > 40) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // ---- レート制限（トランジェント。IPは平文保存しない） ----
+    private function get_client_ip() {
+        // 本番は nginx 直（CDN/プロキシなし）。Cloudflare等導入時は wpsg_client_ip で差し替え。
+        // X-Forwarded-For は偽装され放題のため既定では信頼しない。
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+        return apply_filters('wpsg_client_ip', $ip);
+    }
+
+    private function get_ip_transient_key() {
+        return 'wpsg_reg_' . md5($this->get_client_ip() . wp_salt('auth'));
+    }
+
+    private function get_ip_registration_count() {
+        return intval(get_transient($this->get_ip_transient_key()));
+    }
+
+    public function record_registration_ip($user_id) {
+        if ($this->options['enable_registration_guard'] !== 'yes') {
+            return;
+        }
+        $key   = $this->get_ip_transient_key();
+        $count = intval(get_transient($key));
+        set_transient($key, $count + 1, HOUR_IN_SECONDS);
+    }
+
+    // ---- メール抑制 ----
+    public function suppress_user_notification($email, $user, $blogname) {
+        $email['to'] = ''; // 送信先を空にして送信を中止させる
+        return $email;
+    }
+
+    public function suppress_admin_notification($email, $user, $blogname) {
+        $email['to'] = '';
+        return $email;
+    }
+
+    // ---- ブロックログ（WP_DEBUG時のみ。メール以外の個人情報は残さない） ----
+    private function log_block($reason, $email) {
+        if (!defined('WP_DEBUG') || !WP_DEBUG) {
+            return;
+        }
+        error_log(sprintf('[WPSG] registration blocked: reason=%s email=%s', $reason, $email));
+    }
+
+    // =====================================================================
     // 管理画面
     // =====================================================================
     public function add_admin_menu() {
@@ -375,6 +672,53 @@ class WPSecurityGuard {
             array($this, 'field_text'), 'wp-security-guard', 'sec_cf7',
             array('key' => 'sender_field', 'id' => 'sender_field')
         );
+
+        // ---- セクション6: 会員登録スパム対策 ★v2.6.0 ----
+        add_settings_section(
+            'sec_registration',
+            '6. 会員登録スパム対策',
+            function () {
+                echo '<p>ボットによるスパム会員登録を防ぎます。WordPress標準の登録フォーム（wp-login.php）と WooCommerce のマイアカウント登録フォームの両方に適用されます。</p>';
+                echo '<p><strong>JSトークン検証</strong>が最も効果的です。JavaScriptを実行しない自動化ツールをほぼ完全に遮断します。</p>';
+            },
+            'wp-security-guard'
+        );
+        add_settings_field('enable_registration_guard', '会員登録スパム対策を有効化',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'enable_registration_guard', 'desc' => 'このモジュール全体のマスタースイッチ。無効にすると以下の防御はすべて動作しません')
+        );
+        add_settings_field('block_wp_login_register', 'wp-login.php の登録を遮断',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'block_wp_login_register', 'desc' => 'wp-login.php?action=register への直接POSTをトップへリダイレクト。WordPress設定「誰でも登録可」の値に依存せず遮断します')
+        );
+        add_settings_field('reg_require_js_token', 'JSトークン検証（推奨）',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_require_js_token', 'desc' => '最も効果が高い防御。JavaScriptを実行しないボットを遮断します')
+        );
+        add_settings_field('reg_honeypot', 'ハニーポット',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_honeypot', 'desc' => '画面外の隠し入力欄。ボットが埋めると拒否します')
+        );
+        add_settings_field('reg_min_form_seconds', 'フォーム最小滞在秒数',
+            array($this, 'field_number'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_min_form_seconds', 'desc' => 'フォーム表示からこの秒数未満での送信を拒否（0=無効）', 'min' => 0, 'max' => 60)
+        );
+        add_settings_field('reg_max_per_ip_hour', '1IPあたりの1時間登録上限',
+            array($this, 'field_number'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_max_per_ip_hour', 'desc' => '同一IPからの登録回数の上限（0=無効）', 'min' => 0, 'max' => 100)
+        );
+        add_settings_field('reg_validate_username', 'ユーザー名の内容検証',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_validate_username', 'desc' => 'ユーザー名・お名前にURL/広告文/長すぎる文字列が含まれる登録を拒否（英語圏顧客が想定される場合はwpsg_registration_spam_keywordsフィルタで調整）')
+        );
+        add_settings_field('reg_suppress_user_email', '登録者宛メールを送らない',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_suppress_user_email', 'desc' => '⚠️ 有効にすると正規の新規顧客もパスワード設定メールを受け取れません。副作用を理解した上で有効化してください（既定=無効）')
+        );
+        add_settings_field('reg_suppress_admin_email', '管理者宛の新規登録通知を送らない',
+            array($this, 'field_radio_yes_no'), 'wp-security-guard', 'sec_registration',
+            array('key' => 'reg_suppress_admin_email', 'desc' => '管理者宛の「新規ユーザー登録」通知メールのみ停止（副作用は小）')
+        );
     }
 
     public function sanitize_options($input) {
@@ -383,7 +727,11 @@ class WPSecurityGuard {
         $yn_keys = array(
             'block_xmlrpc', 'block_rest_users', 'block_author_query',
             'unify_login_errors', 'hide_wp_version', 'disable_app_passwords',
-            'enable_cf7_guard', 'check_sender'
+            'enable_cf7_guard', 'check_sender',
+            // 会員登録スパム対策 ★v2.6.0
+            'enable_registration_guard', 'block_wp_login_register',
+            'reg_require_js_token', 'reg_honeypot', 'reg_validate_username',
+            'reg_suppress_user_email', 'reg_suppress_admin_email',
         );
         foreach ($yn_keys as $k) {
             $clean[$k] = (isset($input[$k]) && $input[$k] === 'yes') ? 'yes' : 'no';
@@ -393,6 +741,10 @@ class WPSecurityGuard {
         $clean['sender_field']       = isset($input['sender_field'])  ? sanitize_text_field($input['sender_field'])  : 'your-name';
         $clean['max_urls']           = isset($input['max_urls'])           ? max(0, intval($input['max_urls']))           : 3;
         $clean['min_japanese_chars'] = isset($input['min_japanese_chars']) ? max(0, intval($input['min_japanese_chars'])) : 5;
+
+        // 会員登録スパム対策の数値キー（クランプ）★v2.6.0
+        $clean['reg_min_form_seconds'] = isset($input['reg_min_form_seconds']) ? min(60,  max(0, intval($input['reg_min_form_seconds']))) : 3;
+        $clean['reg_max_per_ip_hour']  = isset($input['reg_max_per_ip_hour'])  ? min(100, max(0, intval($input['reg_max_per_ip_hour'])))  : 3;
 
         return $clean;
     }
@@ -445,6 +797,21 @@ class WPSecurityGuard {
             $('input[name="<?php echo esc_js(self::OPTION_NAME); ?>[check_sender]"]').change(toggleSenderField);
             $('input[name="<?php echo esc_js(self::OPTION_NAME); ?>[enable_cf7_guard]"]').change(toggleCf7Fields);
             toggleCf7Fields();
+
+            // 会員登録スパム対策：マスタースイッチで残り8項目を有効/無効化 ★v2.6.0
+            function toggleRegFields() {
+                var enabled = $('input[name="<?php echo esc_js(self::OPTION_NAME); ?>[enable_registration_guard]"]:checked').val() === 'yes';
+                var keys = ['block_wp_login_register','reg_require_js_token','reg_honeypot',
+                    'reg_min_form_seconds','reg_max_per_ip_hour','reg_validate_username',
+                    'reg_suppress_user_email','reg_suppress_admin_email'];
+                var rows = $();
+                for (var i = 0; i < keys.length; i++) {
+                    rows = rows.add($('[name="<?php echo esc_js(self::OPTION_NAME); ?>[' + keys[i] + ']"]').closest('tr'));
+                }
+                rows.toggle(enabled);
+            }
+            $('input[name="<?php echo esc_js(self::OPTION_NAME); ?>[enable_registration_guard]"]').change(toggleRegFields);
+            toggleRegFields();
         });
         </script>
         <?php
