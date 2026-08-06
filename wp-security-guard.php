@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.7.0
+Version: 2.8.0
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -861,6 +861,10 @@ add_action('plugins_loaded', array('WPSecurityGuard', 'get_instance'));
 // 点検モジュールの読み込み(Phase 1で追加)
 require_once __DIR__ . '/includes/class-site-inspector.php';
 add_action('plugins_loaded', array('WPSG_Site_Inspector', 'init'), 11);
+
+// Flamingo データ一括削除（受信メッセージ／アドレス帳）★v2.8.0
+require_once __DIR__ . '/includes/class-flamingo-cleanup.php';
+add_action('plugins_loaded', array('WPSG_Flamingo_Cleanup', 'init'), 11);
 
 /**
  * 自己ホスト更新チェッカー (plugin-update-checker / GitHub) ★v2.5.0
