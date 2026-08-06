@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.6.0
+Version: 2.7.0
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard

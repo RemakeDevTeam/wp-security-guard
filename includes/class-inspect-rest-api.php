@@ -101,11 +101,13 @@ class WPSG_Inspect_Rest_Api {
             );
         }
 
-        // 同梱(既定)トークンは低リスク項目のみ許可。
-        // membership / stripe / all（機微情報）は個別トークン必須。★v2.5.1
+        // 同梱(既定)/共通トークンは低リスク項目のみ許可。
+        // membership / all（機微情報）は個別トークン必須。★v2.5.1
+        // stripe は「モード概要(test/live)のみ」を既定トークンでも許可し、鍵・webhook等の
+        // 機微詳細は route_stripe 側で redact する（個別トークンのみ全項目）。★v2.7.0
         if ($class === 'default') {
             $route = (string) $request->get_route();
-            $sensitive = array('/membership', '/stripe', '/all');
+            $sensitive = array('/membership', '/all');
             foreach ($sensitive as $suffix) {
                 if (substr($route, -strlen($suffix)) === $suffix) {
                     return new WP_Error(
@@ -219,10 +221,58 @@ class WPSG_Inspect_Rest_Api {
 
     /**
      * GET /wpsg/v1/inspect/stripe
+     * 個別(explicit)トークン=全項目。既定/共通トークン=モード概要(test/live)のみ。★v2.7.0
      */
     public static function route_stripe($request) {
         $result = self::run_inspector(new WPSG_Inspector_Stripe());
-        return self::success($result['data'], $result['warnings']);
+        $data   = $result['data'];
+        if (self::token_class($request) !== 'explicit') {
+            $data = self::redact_stripe_to_mode($data);
+        }
+        return self::success($data, $result['warnings']);
+    }
+
+    /**
+     * リクエストの Bearer トークンを分類する。★v2.7.0
+     *
+     * @param WP_REST_Request $request
+     * @return string|false 'explicit' | 'default' | false
+     */
+    private static function token_class($request) {
+        $auth = $request->get_header('Authorization');
+        if (!empty($auth) && preg_match('/Bearer\s+(.+)/i', $auth, $m)) {
+            return WPSG_Inspect_Token::classify(trim($m[1]));
+        }
+        return false;
+    }
+
+    /**
+     * Stripe結果を「モード概要のみ」に絞る（鍵の有無・webhook・通貨・実装詳細を除去）。★v2.7.0
+     * 既定/共通トークン向け。test/live の運用監視に必要な最小限だけを返す。
+     *
+     * @param array $data inspect_all() の結果。
+     * @return array
+     */
+    private static function redact_stripe_to_mode($data) {
+        if (!is_array($data)) {
+            return array('redacted' => true);
+        }
+        $summary = isset($data['summary']) && is_array($data['summary']) ? $data['summary'] : array();
+        $mc      = isset($data['mode_consistency']) && is_array($data['mode_consistency']) ? $data['mode_consistency'] : array();
+        return array(
+            'redacted'         => true, // モードのみ（機微詳細は個別トークンで /stripe を叩くと取得可）
+            'implementations'  => isset($data['implementations']) ? array_values((array) $data['implementations']) : array(),
+            'summary'          => array(
+                'implementations_count' => (int) ($summary['implementations_count'] ?? 0),
+                'live_implementations'  => (int) ($summary['live_implementations'] ?? 0),
+                'test_implementations'  => (int) ($summary['test_implementations'] ?? 0),
+                'configured_only'       => (int) ($summary['configured_only'] ?? 0),
+            ),
+            'mode_consistency' => array(
+                'consistent' => ! empty($mc['consistent']),
+                'warning'    => isset($mc['warning']) ? $mc['warning'] : null,
+            ),
+        );
     }
 
     // ========================================================================
