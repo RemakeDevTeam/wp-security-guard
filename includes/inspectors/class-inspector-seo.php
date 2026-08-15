@@ -270,29 +270,326 @@ class WPSG_Inspector_Seo extends WPSG_Inspector_Base {
     }
 
     /**
-     * フッター(著作権表記)の状況を返す(作業4の対象)。
+     * フッター・著作権表記の状況を返す(作業4の対象)。★検出のみ
      *
-     * テーマファイルの中身までは読まず、テーマの素性と、テーマオプションに
-     * 会社名が入っていないかだけを見る。実際の出力確認は外形チェック側で行う。
+     * 指示書は「全ページに影響するためテンプレートファイルでの修正が効率的」としている。
+     * そこで、修正計画がそのまま立てられるよう
+     *   テンプレートファイル(行番号つき) / テーマオプション / theme_mods / ウィジェット
+     * の4か所を走査して該当箇所を返す。
+     *
+     * 本メソッドは読み取り専用で、一切変更しない。除去は手作業で行う(作業3と同じ扱い)。
      *
      * @return array
      */
     private function scan_footer() {
         $theme = wp_get_theme();
         $out = array(
-            'stylesheet' => (string) $theme->get_stylesheet(),
-            'template'   => (string) $theme->get_template(),
-            'is_child'   => $theme->get_stylesheet() !== $theme->get_template(),
-            'name'       => (string) $theme->get('Name'),
-            'hits'       => array(),
+            'stylesheet'     => (string) $theme->get_stylesheet(),
+            'template'       => (string) $theme->get_template(),
+            'is_child'       => $theme->get_stylesheet() !== $theme->get_template(),
+            'name'           => (string) $theme->get('Name'),
+            'files'          => $this->scan_theme_files(),
+            'options'        => $this->scan_footer_options(),
+            'theme_mods'     => $this->scan_theme_mods(),
+            'widgets'        => $this->scan_footer_widgets(),
+            'menus'          => $this->scan_menu_items(),
+            'blogname'       => $this->scan_blogname(),
         );
+        // 会社名・代表者名を含む該当のみを数える(著作権表記だけの行は参考扱い)。
+        $high = 0;
+        foreach ($out['files'] as $h) {
+            if ($h['priority'] === 'high') {
+                $high++;
+            }
+        }
+        $others = count($out['options']) + count($out['theme_mods']) + count($out['widgets'])
+                + count($out['menus']) + ($out['blogname'] ? 1 : 0);
+        $out['high_hits']  = $high + $others;
+        $out['total_hits'] = count($out['files']) + $others;
+        return $out;
+    }
 
-        // よくあるテーマオプション名を走査して、会社名を含むものを拾う。
-        $candidates = array('copyright', 'footer_copyright', 'site_copyright', 'company_name', 'footer_text');
-        foreach ($candidates as $key) {
-            $v = get_option($key, '');
-            if (is_string($v) && $v !== '' && ($this->contains($v, $this->company) || $this->contains($v, $this->rep))) {
-                $out['hits'][] = array('source' => 'option:' . $key, 'value' => mb_substr($v, 0, 200));
+    /** @var int 走査するテンプレートファイル数の上限。 */
+    const MAX_FILES = 400;
+
+    /** @var int 1ファイルあたりの読み込みサイズ上限(バイト)。 */
+    const MAX_FILE_SIZE = 300000;
+
+    /**
+     * テーマのテンプレートファイルから、会社名・代表者名・著作権表記の行を拾う。
+     *
+     * 子テーマと親テーマの両方を見る。ベンダーディレクトリや資産は除外し、
+     * 階層は2階層までに制限する(点検が重くならないようにするため)。
+     *
+     * @return array
+     */
+    private function scan_theme_files() {
+        $dirs = array_unique(array_filter(array(
+            get_stylesheet_directory(),
+            get_template_directory(),
+        )));
+
+        $hits    = array();
+        $scanned = 0;
+
+        foreach ($dirs as $dir) {
+            if (!is_dir($dir)) {
+                continue;
+            }
+            $root  = rtrim($dir, '/');
+            $label = basename($root);
+            foreach ($this->php_files($root) as $path) {
+                if ($scanned >= self::MAX_FILES) {
+                    break 2;
+                }
+                $scanned++;
+
+                $size = @filesize($path);
+                if ($size === false || $size > self::MAX_FILE_SIZE) {
+                    continue;
+                }
+                $src = @file_get_contents($path);
+                if ($src === false || $src === '') {
+                    continue;
+                }
+                // 会社名・代表者名・著作権表記のいずれかを含むファイルだけ行単位で調べる。
+                if (!$this->contains($src, $this->company)
+                    && !$this->contains($src, $this->rep)
+                    && stripos($src, 'copyright') === false
+                    && strpos($src, '©') === false
+                    && stripos($src, '&copy;') === false) {
+                    continue;
+                }
+
+                // テーマフォルダ名からの相対パスにする(集中管理側で読みやすくするため)。
+                $rel   = $label . '/' . ltrim(str_replace($root, '', $path), '/');
+                $lines = explode("\n", $src);
+                foreach ($lines as $i => $line) {
+                    $why = array();
+                    if ($this->contains($line, $this->company)) {
+                        $why[] = 'company';
+                    }
+                    if ($this->contains($line, $this->rep)) {
+                        $why[] = 'rep';
+                    }
+                    if (stripos($line, 'copyright') !== false || strpos($line, '©') !== false || stripos($line, '&copy;') !== false) {
+                        $why[] = 'copyright';
+                    }
+                    if (empty($why)) {
+                        continue;
+                    }
+                    $hits[] = array(
+                        'file'     => $rel,
+                        'line'     => $i + 1,
+                        'why'      => $why,
+                        // 会社名・代表者名を含む行が作業4の本命。著作権表記だけの行は参考。
+                        'priority' => (in_array('company', $why, true) || in_array('rep', $why, true)) ? 'high' : 'low',
+                        'text'     => trim(mb_substr($line, 0, 200)),
+                    );
+                    if (count($hits) >= 200) {
+                        break 3;
+                    }
+                }
+            }
+        }
+
+        // 会社名・代表者名を含む行を先頭に寄せる(件数が多いときに埋もれないように)。
+        usort($hits, function ($a, $b) {
+            if ($a['priority'] === $b['priority']) {
+                return strcmp($a['file'] . $a['line'], $b['file'] . $b['line']);
+            }
+            return $a['priority'] === 'high' ? -1 : 1;
+        });
+
+        return $hits;
+    }
+
+    /**
+     * テーマ配下の .php を列挙する(2階層まで、除外ディレクトリあり)。
+     *
+     * @param string $root
+     * @return array
+     */
+    private function php_files($root) {
+        $skip  = array('node_modules', 'vendor', 'assets', 'images', 'img', 'fonts', 'css', 'js', '.git');
+        $files = (array) glob($root . '/*.php');
+
+        foreach ((array) glob($root . '/*', GLOB_ONLYDIR) as $d1) {
+            if (in_array(basename($d1), $skip, true)) {
+                continue;
+            }
+            $files = array_merge($files, (array) glob($d1 . '/*.php'));
+            foreach ((array) glob($d1 . '/*', GLOB_ONLYDIR) as $d2) {
+                if (in_array(basename($d2), $skip, true)) {
+                    continue;
+                }
+                $files = array_merge($files, (array) glob($d2 . '/*.php'));
+            }
+        }
+        return array_values(array_filter($files, 'is_file'));
+    }
+
+    /**
+     * フッターに使われがちなオプションを走査する。
+     *
+     * @return array
+     */
+    private function scan_footer_options() {
+        global $wpdb;
+
+        $out = array();
+
+        // 名前で当たりをつける(copyright/footer/company を含むオプション)。
+        $rows = $wpdb->get_results(
+            "SELECT option_name, option_value FROM {$wpdb->options}
+             WHERE option_name LIKE '%copyright%'
+                OR option_name LIKE '%footer%'
+                OR option_name LIKE '%company%'
+             LIMIT 100"
+        );
+        foreach ($rows as $r) {
+            $v = (string) $r->option_value;
+            if ($v === '' || strlen($v) > 20000) {
+                continue;
+            }
+            if ($this->contains($v, $this->company) || $this->contains($v, $this->rep)
+                || stripos($v, 'copyright') !== false || strpos($v, '©') !== false) {
+                $out[] = array(
+                    'key'   => (string) $r->option_name,
+                    'value' => mb_substr(trim(wp_strip_all_tags($v)), 0, 200),
+                );
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * カスタマイザー設定(theme_mods)を走査する。
+     *
+     * @return array
+     */
+    private function scan_theme_mods() {
+        $out  = array();
+        $mods = get_theme_mods();
+        if (!is_array($mods)) {
+            return $out;
+        }
+        foreach ($mods as $k => $v) {
+            if (!is_string($v) || $v === '') {
+                continue;
+            }
+            if ($this->contains($v, $this->company) || $this->contains($v, $this->rep)
+                || stripos($v, 'copyright') !== false || strpos($v, '©') !== false) {
+                $out[] = array(
+                    'key'   => (string) $k,
+                    'value' => mb_substr(trim(wp_strip_all_tags($v)), 0, 200),
+                );
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * ナビゲーションメニューの項目名を走査する。
+     *
+     * 実サイトの調査で、テンプレートに著作権表記が無いのに <footer> 内に会社名が
+     * 出ているケースが見つかった。フッターメニューの項目名が会社名になっているのが
+     * 原因なので、メニュー項目も検出対象に含める。
+     *
+     * @return array
+     */
+    private function scan_menu_items() {
+        $out       = array();
+        $locations = get_nav_menu_locations();
+        $menus     = wp_get_nav_menus();
+        if (empty($menus)) {
+            return $out;
+        }
+
+        // メニューID => 割り当てられているテーマ位置(表示用)。
+        $where = array();
+        foreach ((array) $locations as $loc => $menu_id) {
+            $where[(int) $menu_id][] = (string) $loc;
+        }
+
+        foreach ($menus as $menu) {
+            $items = wp_get_nav_menu_items($menu->term_id);
+            if (empty($items)) {
+                continue;
+            }
+            foreach ($items as $item) {
+                $label = (string) $item->title;
+                if ($label === '') {
+                    continue;
+                }
+                if (!$this->contains($label, $this->company) && !$this->contains($label, $this->rep)) {
+                    continue;
+                }
+                $out[] = array(
+                    'menu'      => (string) $menu->name,
+                    'locations' => isset($where[(int) $menu->term_id]) ? $where[(int) $menu->term_id] : array(),
+                    'item_id'   => (int) $item->ID,
+                    'label'     => mb_substr($label, 0, 120),
+                    'url'       => (string) $item->url,
+                );
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * サイト名(blogname)自体が会社名になっていないかを見る。
+     *
+     * テーマによっては <footer> にサイト名を出すため、ここが発生源になりうる。
+     *
+     * @return array|null
+     */
+    private function scan_blogname() {
+        $name = (string) get_option('blogname');
+        if ($name === '') {
+            return null;
+        }
+        if (!$this->contains($name, $this->company) && !$this->contains($name, $this->rep)) {
+            return null;
+        }
+        return array('key' => 'blogname', 'value' => mb_substr($name, 0, 120));
+    }
+
+    /**
+     * ウィジェット(テキスト/カスタムHTML)を走査する。
+     *
+     * @return array
+     */
+    private function scan_footer_widgets() {
+        global $wpdb;
+
+        $out  = array();
+        $rows = $wpdb->get_results(
+            "SELECT option_name, option_value FROM {$wpdb->options}
+             WHERE option_name LIKE 'widget_%' LIMIT 100"
+        );
+        foreach ($rows as $r) {
+            $data = maybe_unserialize($r->option_value);
+            if (!is_array($data)) {
+                continue;
+            }
+            foreach ($data as $idx => $w) {
+                if (!is_array($w)) {
+                    continue;
+                }
+                foreach (array('text', 'content', 'title') as $field) {
+                    if (empty($w[$field]) || !is_string($w[$field])) {
+                        continue;
+                    }
+                    $v = $w[$field];
+                    if ($this->contains($v, $this->company) || $this->contains($v, $this->rep)
+                        || stripos($v, 'copyright') !== false || strpos($v, '©') !== false) {
+                        $out[] = array(
+                            'widget' => (string) $r->option_name . '[' . $idx . '].' . $field,
+                            'value'  => mb_substr(trim(wp_strip_all_tags($v)), 0, 200),
+                        );
+                    }
+                }
             }
         }
         return $out;
