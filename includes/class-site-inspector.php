@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.3.0');
+    define('WPSG_INSPECTOR_VERSION', '1.4.0');
 }
 
 /**
@@ -78,6 +78,13 @@ class WPSG_Site_Inspector {
         require_once __DIR__ . '/inspectors/stripe/class-stripe-bankpay.php';
         require_once __DIR__ . '/inspectors/stripe/class-stripe-dispatcher.php';
         require_once __DIR__ . '/inspectors/class-inspector-stripe.php';
+
+        // SEO Guard（検索対策）★v2.9.0
+        // 点検は読み取り専用。書き込みは Ed25519 署名を必須とする。
+        require_once __DIR__ . '/class-seo-signature.php';
+        require_once __DIR__ . '/class-seo-guard.php';
+        require_once __DIR__ . '/inspectors/class-inspector-seo.php';
+        WPSG_SEO_Guard::init();
 
         // 管理画面拡張（「6. サイト点検設定」「7. サイト機能フラグ管理」）は既定で非表示。★v2.5.2
         // 点検・プラグイン版取得は集中管理側（remakemanager）で行うため、各サイトのUIは不要。

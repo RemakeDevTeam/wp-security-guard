@@ -51,6 +51,50 @@ class WPSG_Inspect_Rest_Api {
                 'permission_callback' => array(__CLASS__, 'check_permission'),
             ));
         }
+
+        // ------------------------------------------------------------------
+        // SEO Guard（検索対策）★v2.9.0
+        // 読み取り(scan/batches)はトークン認証。書き込み(apply/rollback)は
+        // Ed25519 の公開鍵署名を必須とする（同梱トークンでは書き込めない）。
+        // ------------------------------------------------------------------
+        register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/seo/scan', array(
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => array(__CLASS__, 'route_seo_scan'),
+            'permission_callback' => array(__CLASS__, 'check_permission'),
+        ));
+        register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/seo/batches', array(
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => array(__CLASS__, 'route_seo_batches'),
+            'permission_callback' => array(__CLASS__, 'check_permission'),
+        ));
+        register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/seo/apply', array(
+            'methods'             => WP_REST_Server::CREATABLE,
+            'callback'            => array(__CLASS__, 'route_seo_apply'),
+            'permission_callback' => array(__CLASS__, 'check_signed_permission'),
+        ));
+        register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/seo/rollback', array(
+            'methods'             => WP_REST_Server::CREATABLE,
+            'callback'            => array(__CLASS__, 'route_seo_rollback'),
+            'permission_callback' => array(__CLASS__, 'check_signed_permission'),
+        ));
+    }
+
+    /**
+     * 書き込み系の権限チェック。★v2.9.0
+     *
+     * トークン認証（レート制限・IP制限を含む）を通したうえで、さらに
+     * 集中管理側の秘密鍵による署名を必須とする。
+     * 同梱トークンは公開リポジトリから入手できるため、これ単体では書き込ませない。
+     *
+     * @param WP_REST_Request $request
+     * @return true|WP_Error
+     */
+    public static function check_signed_permission($request) {
+        $base = self::check_permission($request);
+        if (is_wp_error($base)) {
+            return $base;
+        }
+        return WPSG_SEO_Signature::verify($request);
     }
 
     /**
@@ -273,6 +317,70 @@ class WPSG_Inspect_Rest_Api {
                 'warning'    => isset($mc['warning']) ? $mc['warning'] : null,
             ),
         );
+    }
+
+    // ========================================================================
+    // SEO Guard（検索対策）★v2.9.0
+    // ========================================================================
+
+    /**
+     * GET /wpsg/v1/seo/scan
+     *
+     * 現状把握のみ（書き込みなし）。会社名・代表者名はクエリで受け取る。
+     *   ?company=アルイトコー&rep=山田 太郎
+     */
+    public static function route_seo_scan($request) {
+        $company = (string) $request->get_param('company');
+        $rep     = (string) $request->get_param('rep');
+        $result  = self::run_inspector(new WPSG_Inspector_Seo($company, $rep));
+        return self::success($result['data'], $result['warnings']);
+    }
+
+    /**
+     * GET /wpsg/v1/seo/batches
+     * 復元可能な適用バッチの一覧。
+     */
+    public static function route_seo_batches($request) {
+        return self::success(array('batches' => WPSG_SEO_Guard::batches()));
+    }
+
+    /**
+     * POST /wpsg/v1/seo/apply
+     *
+     * ボディ: {"dry_run": true, "ops": [...]}
+     * dry_run は既定 true。false を明示したときのみ書き込む。
+     */
+    public static function route_seo_apply($request) {
+        $body = json_decode((string) $request->get_body(), true);
+        if (!is_array($body)) {
+            return new WP_Error('bad_body', 'Request body must be a JSON object.', array('status' => 400));
+        }
+        // 既定は必ず dry_run。false の明示指定があるときだけ書き込む。
+        $dry_run = !(isset($body['dry_run']) && $body['dry_run'] === false);
+        $ops     = isset($body['ops']) ? $body['ops'] : array();
+
+        $result = WPSG_SEO_Guard::apply($ops, $dry_run);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        return self::success($result);
+    }
+
+    /**
+     * POST /wpsg/v1/seo/rollback
+     * ボディ: {"batch_id": "b20260815..."}
+     */
+    public static function route_seo_rollback($request) {
+        $body     = json_decode((string) $request->get_body(), true);
+        $batch_id = is_array($body) && isset($body['batch_id']) ? (string) $body['batch_id'] : '';
+        if ($batch_id === '') {
+            return new WP_Error('bad_body', 'batch_id is required.', array('status' => 400));
+        }
+        $result = WPSG_SEO_Guard::rollback($batch_id);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        return self::success($result);
     }
 
     // ========================================================================
