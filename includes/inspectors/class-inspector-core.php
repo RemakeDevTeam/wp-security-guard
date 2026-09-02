@@ -25,6 +25,12 @@ class WPSG_Inspector_Core extends WPSG_Inspector_Base {
             'wp_version'      => get_bloginfo('version'),
             'site_url'        => home_url(),
             'admin_url'       => admin_url(),
+            // 「設定 → 一般」に保存されている生値。★2.9.1
+            // home_url()/site_url() は is_ssl() でスキームが上書きされるため、
+            // https で点検すると保存値が http でも https に見えてしまう。
+            // http運用の判定には option の生値が要る。
+            'home_option'     => get_option('home', ''),
+            'siteurl_option'  => get_option('siteurl', ''),
             'is_multisite'    => is_multisite(),
             'php_version'     => PHP_VERSION,
             'php_major_minor' => PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION,
@@ -53,6 +59,18 @@ class WPSG_Inspector_Core extends WPSG_Inspector_Base {
                 'wp_debug_in_production',
                 'WP_DEBUGが本番環境で有効になっています'
             );
+        }
+
+        // 保存値が http のままなら警告。★2.9.1
+        // 表示上は https でも、WordPress が生成するURLの正はこちら。
+        foreach (array('home_option' => 'サイトアドレス', 'siteurl_option' => 'WordPressアドレス') as $k => $label) {
+            if (stripos((string) $data[$k], 'http://') === 0) {
+                $this->add_warning(
+                    'warning',
+                    'insecure_' . $k,
+                    $label . '(URL)が http:// のまま保存されています'
+                );
+            }
         }
 
         // 利用可能なWP本体の更新を確認

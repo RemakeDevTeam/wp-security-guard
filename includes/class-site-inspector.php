@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.4.0');
+    define('WPSG_INSPECTOR_VERSION', '1.4.1');
 }
 
 /**
