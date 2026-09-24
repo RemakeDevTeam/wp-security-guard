@@ -2,6 +2,14 @@
 
 本ファイルはプラグインのすべてのバージョン変更を記録します。
 
+## 2.9.2
+
+- **二重インストールの安全装置**を追加。既に `WPSecurityGuard` クラスが読み込まれている場合は、後から読み込まれたコピーが自身を降りる（`return`）。致命的エラーでサイトが落ちるのを防ぎ、管理者には「二重にインストールされています」の通知を出す。
+- 背景：GitHub の「Source code (zip)」は中のフォルダ名が `wp-security-guard-<タグ>` になる。これを管理画面からアップロードすると、WordPress は既存の `wp-security-guard` とは**別のプラグイン**として登録する。両方を有効化すると同じクラスを二重に定義して **PHP Fatal error でサイトが落ちる**。サブドメイン87件へ手作業で導入するにあたり、この事故が起きうるため先に塞いだ。
+- どちらのコピーが生き残るかはフォルダ名の読み込み順で決まるので、正しい名前の `wp-security-guard` が優先される。
+- **リリース時に配布用 zip を自動添付する GitHub Actions を追加**（`.github/workflows/release-zip.yml`）。最上位フォルダを `wp-security-guard` に固定した `wp-security-guard-<タグ>-install.zip` を作り、フォルダ名を検証したうえでリリースへ添付する。**手動インストールにはこの zip を使う**。検証に失敗したらワークフローが停止するので、名前の違う zip が配られることはない。
+- 自己ホスト更新（plugin-update-checker）は従来どおりソース zip を使う。`enableReleaseAssets()` は呼んでいないため、既存サイトの自動更新の経路は変わらない。
+
 ## 2.9.1
 
 - **core inspector に「設定 → 一般」の生値を追加**（`home_option` = `get_option('home')`／`siteurl_option` = `get_option('siteurl')`）。いずれかが `http://` の場合は警告 `insecure_home_option`／`insecure_siteurl_option` を出す。

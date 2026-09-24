@@ -1,0 +1,58 @@
+# リリースを公開すると、管理画面からそのまま入れられる zip を作って添付する。
+#
+# GitHub が自動で付ける「Source code (zip)」は中のフォルダ名が
+# wp-security-guard-<タグ> になる。管理画面からアップロードすると別プラグイン
+# として入ってしまうため、手動インストールには使えない。
+# フォルダ名を wp-security-guard に固定した zip を必ず用意しておく。
+name: Attach install zip
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build plugin zip
+        run: |
+          set -euo pipefail
+          VER="${{ github.event.release.tag_name }}"
+          mkdir -p build/wp-security-guard
+          # 配布に不要な開発用ファイルを除く。README は版の確認に使うので残す。
+          rsync -a ./ build/wp-security-guard/ \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'build' \
+            --exclude 'docs' \
+            --exclude 'PHASE*-VERIFICATION.md' \
+            --exclude '.gitattributes' \
+            --exclude '.gitignore' \
+            --exclude '.DS_Store'
+          cd build && zip -qr "wp-security-guard-${VER}-install.zip" wp-security-guard
+          unzip -l "wp-security-guard-${VER}-install.zip" | head -5
+
+      - name: Verify top-level folder
+        run: |
+          set -euo pipefail
+          VER="${{ github.event.release.tag_name }}"
+          TOP=$(unzip -l "build/wp-security-guard-${VER}-install.zip" \
+                | awk 'NR>3 {print $4}' | grep -v '^$' | cut -d/ -f1 | sort -u)
+          echo "top-level: $TOP"
+          # フォルダ名が違うと管理画面で別プラグイン扱いになるので、ここで止める。
+          test "$TOP" = "wp-security-guard"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${{ github.event.release.tag_name }}"
+          gh release upload "$VER" "build/wp-security-guard-${VER}-install.zip" \
+            --clobber --repo "${{ github.repository }}"

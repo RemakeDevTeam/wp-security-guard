@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)・検索対策モジュール(SEO Guard／noindex付与・メタタグ変更を署名付きで集中管理)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.9.1
+Version: 2.9.2
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -12,6 +12,34 @@ Update URI: https://github.com/RemakeDevTeam/wp-security-guard
 
 if (!defined('ABSPATH')) {
     exit;
+}
+
+/**
+ * 二重インストールの安全装置。★2.9.2
+ *
+ * GitHub の「Source code (zip)」は中のフォルダ名が wp-security-guard-2.9.1 の
+ * ように版番号つきになる。これを管理画面からアップロードすると、WordPress は
+ * 既存の wp-security-guard とは別のプラグインとして入れてしまい、両方を
+ * 有効化すると同じクラスを二重に定義して致命的エラーでサイトが落ちる。
+ *
+ * 落とさずに、後から読み込まれた側を黙って降ろす。どちらが残るかは
+ * フォルダ名の順で決まるので、正しい名前の wp-security-guard が先に載る。
+ * 管理者には通知を出し、余分なほうを消せるようにする。
+ */
+if (class_exists('WPSecurityGuard')) {
+    add_action('admin_notices', function () {
+        if (!current_user_can('activate_plugins')) {
+            return;
+        }
+        $dir = basename(dirname(__FILE__));
+        echo '<div class="notice notice-error"><p><strong>WP Security Guard</strong>：';
+        echo esc_html(sprintf(
+            '同じプラグインが二重にインストールされています（%s）。このコピーは読み込みを中止しました。プラグイン一覧から余分なほうを停止・削除してください。正しいフォルダ名は wp-security-guard です。',
+            $dir
+        ));
+        echo '</p></div>';
+    });
+    return;
 }
 
 class WPSecurityGuard {
