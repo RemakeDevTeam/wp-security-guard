@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)・検索対策モジュール(SEO Guard／noindex付与・メタタグ変更を署名付きで集中管理)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.9.2
+Version: 2.9.3
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * 二重インストールの安全装置。★2.9.2
+ * 二重インストールの安全装置。★2.9.2（判定方法を 2.9.3 で修正）
  *
  * GitHub の「Source code (zip)」は中のフォルダ名が wp-security-guard-2.9.1 の
  * ように版番号つきになる。これを管理画面からアップロードすると、WordPress は
@@ -25,8 +25,15 @@ if (!defined('ABSPATH')) {
  * 落とさずに、後から読み込まれた側を黙って降ろす。どちらが残るかは
  * フォルダ名の順で決まるので、正しい名前の wp-security-guard が先に載る。
  * 管理者には通知を出し、余分なほうを消せるようにする。
+ *
+ * 判定に class_exists は使えない。★2.9.3
+ * PHPはファイル冒頭のクラス宣言を「コンパイル時」に束縛するため、
+ * このファイル自身の class WPSecurityGuard が、1行目を実行する前に
+ * すでに定義済みになる。class_exists は常に true を返し、1つしか
+ * 入っていないサイトでも必ず降りてしまい、プラグインが丸ごと無効化される。
+ * 実行時にしか定義されない定数で判定する。
  */
-if (class_exists('WPSecurityGuard')) {
+if (defined('WPSG_MAIN_FILE')) {
     add_action('admin_notices', function () {
         if (!current_user_can('activate_plugins')) {
             return;
@@ -41,6 +48,9 @@ if (class_exists('WPSecurityGuard')) {
     });
     return;
 }
+
+// このファイルを読み込んだ印。2つ目のコピーはこれを見て降りる。★2.9.3
+define('WPSG_MAIN_FILE', __FILE__);
 
 class WPSecurityGuard {
 
