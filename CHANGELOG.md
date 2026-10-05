@@ -2,6 +2,15 @@
 
 本ファイルはプラグインのすべてのバージョン変更を記録します。
 
+## 2.9.4
+
+- **plugins inspector に WP Full Pay（WP Full Stripe）のライセンス状態読み取りを追加**。無料版 8.x にもライセンスキー入力ページ（`admin.php?page=wpfs-settings-license`）があり、開発会社側の不手際で**無効化・未入力**になっているサイトを集中管理側から洗い出すために追加した。
+- 読み取り元：Themeisle SDK がオプション `{namespace}_license_data`（namespace＝プラグインのディレクトリ名の `-`→`_`）に格納する `stdClass`。無料版＝`wp_full_stripe_free_license_data`／有料版＝`wp_full_stripe_license_data`。プラグイン本体の `WPFS_License::get_data()` と同一のオプション・同一の判定（`->license === 'valid'` で有効）。
+- 返す項目（`/wpsg/v1/inspect/plugins` の `wpfs_licenses[]`）：`edition`（free/premium/members）・`active`・`status`（valid / active_expired / invalid / site_inactive / not_entered 等）・`ok`・`has_key`（キーが入っているかの真偽のみ）・`expires`・`plan`（price_id）・`needs_attention`（有効なのに valid でない）。**ライセンスキー本体（`->key`）は一切返さない。**
+- トップレベルに `wpfs_license_problem`（有効なエディションで valid でないものが1つでもあれば true）を追加し、スイープで要確認サイトを即座に拾えるようにした。
+- 重要：このプラグインは `has_valid_key_for_fees()` により、**ライセンスが valid でないと将来の決済にプラットフォーム手数料が課される**設計。「未入力・無効化」サイトは実害につながるため洗い出す価値がある。
+- 読み取り専用・加算的な追加のみ（早期 return なし・既存の点検挙動は不変）。正常系（free=valid／premium 未入力の通常構成）と異常系（未入力・site_inactive・active_expired・invalid・空オブジェクト・option=false）をスタブ環境で end-to-end 検証し、`inspect()` が完走すること・出力 JSON にキーが混入しないことを確認した。
+
 ## 2.9.3
 
 - **緊急修正。2.9.2 の二重インストール安全装置に欠陥があり、プラグインが丸ごと無効化されていた。**

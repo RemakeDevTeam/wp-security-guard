@@ -148,6 +148,16 @@ class WPSG_Inspector_Plugins extends WPSG_Inspector_Base {
             }
         }
 
+        // v2.9.4: WP Full Pay (WP Full Stripe) のライセンス状態を読み取る (キーは伏せる)
+        $wpfs_licenses = $this->read_wpfs_licenses($all_plugins, $active_plugin_files);
+        $wpfs_license_problem = false;
+        foreach ($wpfs_licenses as $wl) {
+            if (!empty($wl['needs_attention'])) {
+                $wpfs_license_problem = true;
+                break;
+            }
+        }
+
         $data = array(
             'active'                => $active,
             'inactive'              => $inactive,
@@ -164,6 +174,9 @@ class WPSG_Inspector_Plugins extends WPSG_Inspector_Base {
             'auto_update_unsupported_active'  => $auto_update_unsupported_active,
             'auto_update_total'               => count($auto_update_plugins),
             'auto_update_globally_enabled'    => $auto_update_globally_enabled,
+            // v2.9.4: WP Full Pay ライセンス状態 (インストール済みの各エディション毎)
+            'wpfs_licenses'         => $wpfs_licenses,
+            'wpfs_license_problem'  => $wpfs_license_problem,
         );
 
         // 旧版残存があれば警告を追加
@@ -300,6 +313,99 @@ class WPSG_Inspector_Plugins extends WPSG_Inspector_Base {
             return self::LEGACY_PLUGINS[$plugin_file];
         }
         return null;
+    }
+
+    /**
+     * WP Full Pay (Themeisle 版 WP Full Stripe) のライセンス状態を読み取る。
+     *
+     * 無料版 8.x にもライセンスキー入力ページ (wpfs-settings-license) があり、
+     * 開発会社側の不手際で無効化・未入力になっているサイトを洗い出すために使う。
+     *
+     * ライセンス情報は Themeisle SDK がオプション
+     *   {namespace}_license_data   (namespace = プラグインのディレクトリ名の "-" を "_" に置換)
+     * に格納する。無料版 = wp_full_stripe_free_license_data / 有料版 = wp_full_stripe_license_data。
+     * 格納値は stdClass で ->license(状態) / ->expires(期限) / ->price_id(プラン) / ->key(キー) を持つ。
+     *
+     * 返すのは状態・期限・プランと「キーが入っているか」の真偽値だけ。**キー本体は絶対に返さない。**
+     *
+     * @param array $all_plugins          get_plugins() の結果
+     * @param array $active_plugin_files  有効プラグインのファイルパス配列
+     * @return array 各エディション毎の配列
+     */
+    private function read_wpfs_licenses($all_plugins, $active_plugin_files) {
+        $out = array();
+
+        foreach ($all_plugins as $plugin_file => $plugin_info) {
+            // ディレクトリが wp-full-stripe で始まるものだけ対象 (free / premium / pro / free__ 等)
+            $dir = (strpos($plugin_file, '/') !== false) ? dirname($plugin_file) : '';
+            if ($dir === '' || stripos($dir, 'wp-full-stripe') !== 0) {
+                continue;
+            }
+
+            $namespace = str_replace('-', '_', strtolower(trim($dir)));
+            $option    = $namespace . '_license_data';
+            $val       = get_option($option, null);
+
+            // エディション判定
+            if (stripos($dir, 'members') !== false) {
+                $edition = 'members';
+            } elseif (stripos($dir, 'free') !== false) {
+                $edition = 'free';
+            } else {
+                $edition = 'premium';
+            }
+
+            // 格納値を配列化 (stdClass / __PHP_Incomplete_Class 両対応)
+            if (is_object($val)) {
+                $arr = get_object_vars($val);
+            } elseif (is_array($val)) {
+                $arr = $val;
+            } else {
+                $arr = array();
+            }
+
+            $license_field = isset($arr['license']) ? (string) $arr['license'] : '';
+            $has_key       = !empty($arr['key']);
+            $expires       = isset($arr['expires']) && $arr['expires'] !== false
+                ? (string) $arr['expires'] : null;
+            $plan          = isset($arr['price_id']) && $arr['price_id'] !== ''
+                ? (string) $arr['price_id'] : null;
+
+            // 状態を正規化
+            if ($val === null || $val === false || $val === '' || (empty($arr) && !$has_key)) {
+                // オプションそのものが無い / 空 = ライセンスキー未入力
+                $status  = 'not_entered';
+                $has_key = false;
+            } elseif ($license_field !== '') {
+                // ライセンスサーバーが返した状態をそのまま使う
+                // (valid / invalid / expired / disabled / inactive / site_inactive / deactivated ...)
+                $status = $license_field;
+            } else {
+                $status = $has_key ? 'unknown' : 'not_entered';
+            }
+
+            $is_active = in_array($plugin_file, (array) $active_plugin_files, true)
+                || (is_multisite() && is_plugin_active_for_network($plugin_file));
+
+            $out[] = array(
+                'plugin'          => $plugin_file,
+                'dir'             => $dir,
+                'namespace'       => $namespace,
+                'edition'         => $edition,
+                'name'            => isset($plugin_info['Name']) ? wp_strip_all_tags((string) $plugin_info['Name']) : '',
+                'version'         => isset($plugin_info['Version']) ? (string) $plugin_info['Version'] : '',
+                'active'          => $is_active,
+                'status'          => $status,          // valid / invalid / expired / not_entered / unknown ...
+                'ok'              => ($status === 'valid'),
+                'has_key'         => $has_key,          // キーが入っているか (キー本体は返さない)
+                'expires'         => $expires,          // 期限 (date / "lifetime" / null)
+                'plan'            => $plan,             // price_id (プランID) / null
+                // 有効なプラグインでライセンスが valid でない = 要確認
+                'needs_attention' => ($is_active && $status !== 'valid'),
+            );
+        }
+
+        return $out;
     }
 
     /**
