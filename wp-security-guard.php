@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)・検索対策モジュール(SEO Guard／noindex付与・メタタグ変更を署名付きで集中管理)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.9.4
+Version: 2.10.0
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -905,6 +905,14 @@ require_once __DIR__ . '/includes/class-flamingo-cleanup.php';
 add_action('plugins_loaded', array('WPSG_Flamingo_Cleanup', 'init'), 11);
 
 /**
+ * 自己更新パッケージの署名確認。★v2.10.0
+ * GitHub を乗っ取られても、集中管理側の秘密鍵で署名されていない更新は入れない。
+ * 更新チェッカーより先に読み込み、WordPress が更新を入れる直前（upgrader_pre_download）で確かめる。
+ */
+require_once __DIR__ . '/includes/class-update-verify.php';
+WPSG_Update_Verify::init();
+
+/**
  * 自己ホスト更新チェッカー (plugin-update-checker / GitHub) ★v2.5.0
  * - 更新元リポジトリは既定で下記。wp-config で define('WPSG_UPDATE_REPO', '...') により上書き可。
  * - プライベートリポジトリは define('WPSG_UPDATE_TOKEN', 'ghp_xxx') でアクセストークン指定。
@@ -923,6 +931,16 @@ if (class_exists('\\YahnisElsts\\PluginUpdateChecker\\v5\\PucFactory')) {
     }
     if (defined('WPSG_UPDATE_BRANCH') && WPSG_UPDATE_BRANCH) {
         $wpsg_update_checker->setBranch(WPSG_UPDATE_BRANCH);
+    }
+    // 更新はリリースに添付した配布 zip（*-install.zip）から入れる。★v2.10.0
+    // 署名は「その zip の中身」に対して作るので、GitHub がその場で作る Source code の zip
+    // （作り直されて中身が変わりうる）には切り替えない（REQUIRE）。zip が無いリリースは更新として扱わない。
+    if (method_exists($wpsg_update_checker, 'getVcsApi')
+        && class_exists('\\YahnisElsts\\PluginUpdateChecker\\v5p7\\Vcs\\Api')) {
+        $wpsg_update_checker->getVcsApi()->enableReleaseAssets(
+            '/-install\.zip$/',
+            \YahnisElsts\PluginUpdateChecker\v5p7\Vcs\Api::REQUIRE_RELEASE_ASSETS
+        );
     }
 }
 

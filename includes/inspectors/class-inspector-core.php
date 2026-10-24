@@ -32,6 +32,8 @@ class WPSG_Inspector_Core extends WPSG_Inspector_Base {
             'home_option'     => get_option('home', ''),
             'siteurl_option'  => get_option('siteurl', ''),
             'is_multisite'    => is_multisite(),
+            // 自己更新の署名確認の直近結果（ok/ng/skip・版・理由）。未実施なら null。★2.10.0
+            'update_verify'   => class_exists('WPSG_Update_Verify') ? WPSG_Update_Verify::last() : null,
             'php_version'     => PHP_VERSION,
             'php_major_minor' => PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION,
             'mysql_version'   => $this->get_mysql_version(),

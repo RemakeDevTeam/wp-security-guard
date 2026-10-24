@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.4.1');
+    define('WPSG_INSPECTOR_VERSION', '1.5.0'); // 2.10.0：自己更新の署名確認
 }
 
 /**
