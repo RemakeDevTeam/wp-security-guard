@@ -2,6 +2,18 @@
 
 本ファイルはプラグインのすべてのバージョン変更を記録します。
 
+## 2.10.1
+
+- **メール送信設定 inspector を追加**（`includes/inspectors/mail/`）。各サイトのメール送信プラグインの設定を集中管理側（WPSM）から点検できるようにする。Stripe inspector と対称の構成（抽象基底＋実装別クラス＋dispatcher＋エントリー）。
+- 取得するのは次の3項目。`/wpsg/v1/inspect/all` の `data.mail` に加算（既存の点検項目は不変）。
+  - **Easy WP SMTP の SMTP 設定**：option `easy_wp_smtp`（v2系）の `smtp`（host/port/encryption/auth/user）＋`mail.mailer`。本体ファイルパスが同一の旧系（option `swpsmtp_options`）にも版・名前空間クラス `\EasyWPSMTP\Core` で系統を判定して防御的に対応（`variant` を返す）。
+  - **MailPoet の SMTP 設定**：独自テーブル `{prefix}mailpoet_settings` の `mta` 行（`method='SMTP'` のとき host/port/encryption/authentication/login）。
+  - **MailPoet「設定＞高度な設定＞すべてのサイトのメールを送信…」がデフォルトの WordPress 送信方法か**：同テーブルの `send_transactional_emails` 行。`default_wp_mailer`（行なし/''/'0' → true、'1' → false）として明示 boolean で返す。MailPoet のニュースレター送信方式（`mta`）とは別設定として分離。
+- **機微はマスク**：SMTPパスワード（Easy WP SMTP／MailPoet とも）は `password_set`（真偽）のみ。MailPoet の `mta['password']` は DB 内平文だが値は一切返さない。`mailpoet_api_key` も `has_mailpoet_api_key`（真偽）化。復号・base64デコード・mta配列の丸ごと返却は行わない。host/port/encryption/auth/username/from_* は平文可。
+- **「結局いま wp_mail を誰が握っているか」の最善推定**（`summary.wp_mail_controller`＝`mailpoet`/`easy-wp-smtp`/`wp_default`）と、MailPoet の肩代わりONかつ Easy WP SMTP も設定済みの競合に `mail_wp_mail_contention` 警告を追加。対象は Easy WP SMTP / MailPoet の2種のみ（他SMTP系が担っていても「検出なし」になる旨は構造＝`baseline_mailer` で明示）。
+- 読み取り専用・加算的な追加のみ（既存の点検挙動は不変）。個別ルート `/inspect/mail` は追加しない（同梱トークン漏れ回避のため `/all` 相乗りのみ＝個別トークン必須）。点検モジュール 1.6.0。
+- 検証（WP不要のオフラインハーネスで実ファイルをロードし `inspect()` を完走）：両非有効／Easy WP SMTP v2設定あり／MailPoet SMTP＋肩代わりON（`default_wp_mailer=false`）／肩代わりOFF（''・行なし→`true`）／両有効の競合→`mail_wp_mail_contention`／テーブル未作成→notice で致命的エラーなし、の7ケースを確認。**全ケースで出力JSONに平文パスワード・APIキーが混入しないこと**を番兵文字列で確認。`php -l` は全新規・編集ファイルで通過。※ 実WordPress＋実プラグインでの `/inspect/all` 実機確認はリリース前に行う。
+
 ## 2.10.0
 
 - **自己更新パッケージの署名確認を追加**（`includes/class-update-verify.php`）。このプラグインは GitHub のリリースから全サイトへ自動更新で配られるため、GitHub のアカウントやトークンが盗まれると全サイトへ悪いコードを一斉に入れられてしまう（UpdraftCentral の接続キー流出と同じ「配布元が狙われる」型）。これを防ぐ。

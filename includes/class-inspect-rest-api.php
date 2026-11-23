@@ -196,6 +196,7 @@ class WPSG_Inspect_Rest_Api {
         $features_inspector   = new WPSG_Inspector_Features();
         $membership_inspector = new WPSG_Inspector_Membership();
         $stripe_inspector     = new WPSG_Inspector_Stripe();
+        $mail_inspector       = new WPSG_Inspector_Mail();
 
         $core_result       = self::run_inspector($core_inspector);
         $theme_result      = self::run_inspector($theme_inspector);
@@ -203,6 +204,7 @@ class WPSG_Inspect_Rest_Api {
         $features_result   = self::run_inspector($features_inspector);
         $membership_result = self::run_inspector($membership_inspector);
         $stripe_result     = self::run_inspector($stripe_inspector);
+        $mail_result       = self::run_inspector($mail_inspector);
 
         $warnings = array_merge(
             $core_result['warnings'],
@@ -210,7 +212,8 @@ class WPSG_Inspect_Rest_Api {
             $plugins_result['warnings'],
             $features_result['warnings'],
             $membership_result['warnings'],
-            $stripe_result['warnings']
+            $stripe_result['warnings'],
+            $mail_result['warnings']
         );
 
         return self::success(array(
@@ -220,6 +223,7 @@ class WPSG_Inspect_Rest_Api {
             'features'   => $features_result['data'],
             'membership' => $membership_result['data'],
             'stripe'     => $stripe_result['data'],
+            'mail'       => $mail_result['data'],
         ), $warnings);
     }
 

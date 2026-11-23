@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.5.0'); // 2.10.0：自己更新の署名確認
+    define('WPSG_INSPECTOR_VERSION', '1.6.0'); // 2.10.1：メール送信設定inspector(Easy WP SMTP/MailPoet)
 }
 
 /**
@@ -78,6 +78,13 @@ class WPSG_Site_Inspector {
         require_once __DIR__ . '/inspectors/stripe/class-stripe-bankpay.php';
         require_once __DIR__ . '/inspectors/stripe/class-stripe-dispatcher.php';
         require_once __DIR__ . '/inspectors/class-inspector-stripe.php';
+
+        // メール送信設定inspector（Easy WP SMTP / MailPoet）★v2.10.1
+        require_once __DIR__ . '/inspectors/mail/class-mail-base.php';
+        require_once __DIR__ . '/inspectors/mail/class-mail-easy-wp-smtp.php';
+        require_once __DIR__ . '/inspectors/mail/class-mail-mailpoet.php';
+        require_once __DIR__ . '/inspectors/mail/class-mail-dispatcher.php';
+        require_once __DIR__ . '/inspectors/class-inspector-mail.php';
 
         // SEO Guard（検索対策）★v2.9.0
         // 点検は読み取り専用。書き込みは Ed25519 署名を必須とする。
