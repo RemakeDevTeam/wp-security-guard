@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.6.0'); // 2.10.1：メール送信設定inspector(Easy WP SMTP/MailPoet)
+    define('WPSG_INSPECTOR_VERSION', '1.6.1'); // 2.10.2：メール設定を /inspect/mail（同梱トークン可）でも提供
 }
 
 /**

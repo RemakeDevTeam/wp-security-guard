@@ -43,6 +43,7 @@ class WPSG_Inspect_Rest_Api {
             'features'   => 'route_features',
             'membership' => 'route_membership',
             'stripe'     => 'route_stripe',
+            'mail'       => 'route_mail',
         );
         foreach ($authenticated as $path => $method) {
             register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/inspect/' . $path, array(
@@ -248,6 +249,19 @@ class WPSG_Inspect_Rest_Api {
      */
     public static function route_plugins($request) {
         $result = self::run_inspector(new WPSG_Inspector_Plugins());
+        return self::success($result['data'], $result['warnings']);
+    }
+
+    /**
+     * GET /wpsg/v1/inspect/mail
+     * メール送信設定（Easy WP SMTP / MailPoet）。★v2.10.2
+     * /membership・/all と違い $sensitive に入れていないので、同梱(共通)トークンでも読める
+     * （トークン配布なしで集中管理側から確認するため）。パスワードは password_set の真偽のみ・
+     * ホスト/ポート/暗号化/ユーザー名/差出人は平文。機微を避けるサイトは wp-config で
+     * define('WPSG_DISABLE_DEFAULT_INSPECT_TOKEN', true); を設定する。
+     */
+    public static function route_mail($request) {
+        $result = self::run_inspector(new WPSG_Inspector_Mail());
         return self::success($result['data'], $result['warnings']);
     }
 
