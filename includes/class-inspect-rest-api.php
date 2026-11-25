@@ -44,6 +44,7 @@ class WPSG_Inspect_Rest_Api {
             'membership' => 'route_membership',
             'stripe'     => 'route_stripe',
             'mail'       => 'route_mail',
+            'fees'       => 'route_fees',
         );
         foreach ($authenticated as $path => $method) {
             register_rest_route(WPSG_INSPECTOR_REST_NAMESPACE, '/inspect/' . $path, array(
@@ -262,6 +263,18 @@ class WPSG_Inspect_Rest_Api {
      */
     public static function route_mail($request) {
         $result = self::run_inspector(new WPSG_Inspector_Mail());
+        return self::success($result['data'], $result['warnings']);
+    }
+
+    /**
+     * GET /wpsg/v1/inspect/fees
+     * 会費の設定（金額・月/年・プラン名）・会員登録ページと特商法ページのURL・
+     * キャンペーンバナー（CampaignSP / CampaignQuo）の有効状態と「バナーの表示」設定。★v2.11.0
+     * いずれも公開ページに出している内容かその設定値なので、/mail と同じく同梱(共通)トークンで読める。
+     * Stripe の価格ID・会員数・鍵は返さない（それらは個別トークン限定の /membership・/stripe 側）。
+     */
+    public static function route_fees($request) {
+        $result = self::run_inspector(new WPSG_Inspector_Fees());
         return self::success($result['data'], $result['warnings']);
     }
 

@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
  * 点検モジュールのバージョン
  */
 if (!defined('WPSG_INSPECTOR_VERSION')) {
-    define('WPSG_INSPECTOR_VERSION', '1.6.1'); // 2.10.2：メール設定を /inspect/mail（同梱トークン可）でも提供
+    define('WPSG_INSPECTOR_VERSION', '1.7.0'); // 2.11.0：会費・キャンペーンバナーの点検 /inspect/fees（同梱トークン可）
 }
 
 /**
@@ -85,6 +85,9 @@ class WPSG_Site_Inspector {
         require_once __DIR__ . '/inspectors/mail/class-mail-mailpoet.php';
         require_once __DIR__ . '/inspectors/mail/class-mail-dispatcher.php';
         require_once __DIR__ . '/inspectors/class-inspector-mail.php';
+
+        // 会費・キャンペーンバナー（membership の dispatcher を使う）★v2.11.0
+        require_once __DIR__ . '/inspectors/class-inspector-fees.php';
 
         // SEO Guard（検索対策）★v2.9.0
         // 点検は読み取り専用。書き込みは Ed25519 署名を必須とする。
