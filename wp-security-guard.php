@@ -3,7 +3,7 @@
 Plugin Name: WP Security Guard
 Plugin URI: https://github.com/RemakeDevTeam/wp-security-guard
 Description: 統合セキュリティプラグイン。XML-RPC遮断・ユーザー名列挙対策・バージョン情報隠蔽・アプリケーションパスワード無効化・Contact Form 7 スパム対策・会員登録スパム対策・サイト点検モジュール(機能フラグ管理・会員管理・決済設定inspector)・検索対策モジュール(SEO Guard／noindex付与・メタタグ変更を署名付きで集中管理)を1プラグインで管理します。自己ホスト更新(GitHub)対応。
-Version: 2.11.0
+Version: 2.11.1
 Author:
 License: GPL v2 or later
 Text Domain: wp-security-guard
@@ -251,6 +251,18 @@ class WPSecurityGuard {
     // =====================================================================
     // 5. Contact Form 7 スパム対策
     // =====================================================================
+
+    /**
+     * 多段フォームの確認ステップに、前の段の値が何も引き継がれずに送られたときの文言。★v2.11.1
+     */
+    const CF7_CARRYOVER_MESSAGE = 'ご入力内容を引き継げませんでした。お手数ですが、お問い合わせページから入力し直してください。';
+
+    /**
+     * 確認ステップの検査で送信を止めた理由（画面の文言の差し替えに使う）。★v2.11.1
+     * 1リクエスト＝1送信なので、インスタンスに持てば足りる。
+     */
+    private $cf7_multistep_rejection = null;
+
     private function apply_cf7_guard() {
         if ($this->options['enable_cf7_guard'] !== 'yes') {
             return;
@@ -260,50 +272,344 @@ class WPSecurityGuard {
         add_filter('wpcf7_validate_textarea*', array($this, 'validate_cf7_text'), 10, 2);
         add_filter('wpcf7_validate_text',      array($this, 'validate_cf7_text'), 10, 2);
         add_filter('wpcf7_validate_text*',     array($this, 'validate_cf7_text'), 10, 2);
+
+        // 多段フォーム（Contact Form 7 Multi-Step Forms）の確認・送信ステップ ★v2.11.1
+        // 確認ステップには入力欄が無く、上の入力欄ごとの検査が1つも走らない。
+        // multistep の順番チェック（cf7msm_set_step・優先度99）の後に、引き継いだ値そのものを見る。
+        add_filter('wpcf7_validate', array($this, 'validate_cf7_multistep_final'), 100, 2);
+        add_filter('wpcf7_feedback_response', array($this, 'cf7_multistep_feedback_response'), 20, 2);
+        add_action('wpcf7_submit', array($this, 'cf7_multistep_submit_response'), 20, 2);
+
+        // 宛先が空の追加メール（メール(2)＝自動返信など）を送らない ★v2.11.1
+        add_filter('wpcf7_additional_mail', array($this, 'drop_cf7_mail_without_recipient'), 20, 2);
     }
 
     public function validate_cf7_text($result, $tag) {
         $tag_name = $tag->name;
-        $text = isset($_POST[$tag_name]) ? wp_unslash($_POST[$tag_name]) : '';
+        $text = isset($_POST[$tag_name]) ? $this->cf7_text_value(wp_unslash($_POST[$tag_name])) : '';
 
         // お問合せ本文フィールドのチェック
         if ($tag_name == $this->options['message_field']) {
-            // 日本語必須チェック
-            if (!empty($text) && !preg_match('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text)) {
-                $result->invalidate($tag, '英語でのお問い合わせには対応しておりません');
+            $violation = $this->cf7_message_violation($text);
+            if ($violation !== null) {
+                $result->invalidate($tag, $violation);
                 return $result;
-            }
-
-            // 最小日本語文字数チェック
-            $min_ja = intval($this->options['min_japanese_chars']);
-            if ($min_ja > 0 && !empty($text)) {
-                preg_match_all('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text, $matches);
-                $ja_count = isset($matches[0]) ? count($matches[0]) : 0;
-                if ($ja_count < $min_ja) {
-                    $result->invalidate($tag, 'お問合せ内容が短すぎます。もう少し詳しくご記入ください。');
-                    return $result;
-                }
-            }
-
-            // URL数上限チェック
-            $max_urls = intval($this->options['max_urls']);
-            if ($max_urls > 0 && !empty($text)) {
-                $url_count = preg_match_all('/https?:\/\/[^\s<>"\']+|www\.[^\s<>"\']+/i', $text);
-                if ($url_count > $max_urls) {
-                    $result->invalidate($tag, 'お問合せ内容に含まれるURLが多すぎます');
-                    return $result;
-                }
             }
         }
 
         // 差出人名フィールドのチェック
         if ($this->options['check_sender'] === 'yes' && $tag_name == $this->options['sender_field']) {
-            if (!empty($text) && !preg_match('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text)) {
-                $result->invalidate($tag, '英語でのお問い合わせには対応しておりません');
+            $violation = $this->cf7_sender_violation($text);
+            if ($violation !== null) {
+                $result->invalidate($tag, $violation);
             }
         }
 
         return $result;
+    }
+
+    /**
+     * お問合せ本文の判定（入力ステップ・確認ステップ共通）。違反なら文言、問題なければ null。
+     * 空は対象外（必須かどうかは CF7 のフォーム側で決める）。★v2.11.1 で validate_cf7_text から切り出し
+     */
+    private function cf7_message_violation($text) {
+        if (empty($text)) {
+            return null;
+        }
+
+        // 日本語必須チェック
+        if (!preg_match('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text)) {
+            return '英語でのお問い合わせには対応しておりません';
+        }
+
+        // 最小日本語文字数チェック
+        $min_ja = intval($this->options['min_japanese_chars']);
+        if ($min_ja > 0) {
+            preg_match_all('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text, $matches);
+            $ja_count = isset($matches[0]) ? count($matches[0]) : 0;
+            if ($ja_count < $min_ja) {
+                return 'お問合せ内容が短すぎます。もう少し詳しくご記入ください。';
+            }
+        }
+
+        // URL数上限チェック
+        $max_urls = intval($this->options['max_urls']);
+        if ($max_urls > 0) {
+            $url_count = preg_match_all('/https?:\/\/[^\s<>"\']+|www\.[^\s<>"\']+/i', $text);
+            if ($url_count > $max_urls) {
+                return 'お問合せ内容に含まれるURLが多すぎます';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 差出人名の判定（「差出人名もチェックする」が有効なときに呼ぶ）。★v2.11.1 で切り出し
+     */
+    private function cf7_sender_violation($text) {
+        if (!empty($text) && !preg_match('/[\x{3040}-\x{309F}\x{30A0}-\x{30FF}\x{4E00}-\x{9FFF}]/u', $text)) {
+            return '英語でのお問い合わせには対応しておりません';
+        }
+        return null;
+    }
+
+    /**
+     * 送られた値を判定用の文字列にする。配列（name[] で送られたもの）は中身をつなげる。
+     * 配列のまま preg_match に渡すと PHP 8 では致命的エラーになるため。
+     */
+    private function cf7_text_value($value) {
+        if (is_array($value)) {
+            $parts = array();
+            array_walk_recursive($value, function ($v) use (&$parts) {
+                if (is_scalar($v)) {
+                    $parts[] = (string) $v;
+                }
+            });
+            return implode("\n", $parts);
+        }
+        return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
+     * 多段フォームの確認・送信ステップの検査。★v2.11.1
+     *
+     * 対象は [multiform 項目名]（前の段の値を表示するタグ）を含むフォーム。
+     * multistep の無料版は、前の段の値（cookie cf7msm_posted_data）が無くても確認ステップの送信を通す。
+     * そのため、入力ステップを経ずに確認ステップへ直接送ると、空のメールが送られ、
+     * メール(2)（宛先 [your-email]）は宛先が無くて送信エラーになる。
+     *
+     * 1. 引き継ぐ項目がすべて空 → 止める（一部だけ空の送信は通す＝「欠けていても届ける」multistep の設計を尊重）
+     * 2. 引き継いだ本文・差出人名に、入力ステップと同じ規則を当てる（前の段の値は訪問者側の cookie で運ばれ、入力ステップを経ずに作れる）
+     *
+     * フィルタ wpsg_cf7_check_multistep_final に false を返せば、そのフォームは対象外。
+     */
+    public function validate_cf7_multistep_final($result, $tags = array()) {
+        $this->cf7_multistep_rejection = null;
+
+        if (!is_object($result) || !method_exists($result, 'invalidate') || !class_exists('WPCF7_Submission')) {
+            return $result;
+        }
+        $submission = WPCF7_Submission::get_instance();
+        if (!$submission) {
+            return $result;
+        }
+        $contact_form = $submission->get_contact_form();
+        if (!$contact_form) {
+            return $result;
+        }
+
+        $fields = $this->cf7_multiform_fields($contact_form);
+        if (!$fields) {
+            return $result; // 多段フォームの確認・送信ステップではない
+        }
+        if (!apply_filters('wpsg_cf7_check_multistep_final', true, $contact_form, $fields)) {
+            return $result;
+        }
+
+        // 入力欄の検査や multistep の順番チェックで既に止まっているなら、その文言を優先する
+        if (method_exists($result, 'is_valid') && !$result->is_valid()) {
+            return $result;
+        }
+
+        $posted = (array) $submission->get_posted_data();
+
+        $carried = false;
+        foreach ($fields as $name) {
+            if (array_key_exists($name, $posted) && !$this->cf7_is_blank($posted[$name])) {
+                $carried = true;
+                break;
+            }
+        }
+
+        $rejection = null;
+        if (!$carried) {
+            $rejection = self::CF7_CARRYOVER_MESSAGE;
+        } else {
+            $message_field = (string) $this->options['message_field'];
+            if ($message_field !== '' && isset($posted[$message_field])) {
+                $rejection = $this->cf7_message_violation($this->cf7_text_value($posted[$message_field]));
+            }
+            $sender_field = (string) $this->options['sender_field'];
+            if ($rejection === null && $this->options['check_sender'] === 'yes'
+                && $sender_field !== '' && isset($posted[$sender_field])) {
+                $rejection = $this->cf7_sender_violation($this->cf7_text_value($posted[$sender_field]));
+            }
+        }
+
+        if ($rejection === null) {
+            return $result;
+        }
+
+        // 確認フォームには該当の入力欄が無いので、架空の hidden を無効にして送信を止める
+        // （multistep 自身も順番チェックで同じ止め方をしている）。文言は応答側で差し替える。
+        $this->cf7_multistep_rejection = $rejection;
+        $result->invalidate(array(
+            'type'     => 'hidden',
+            'basetype' => 'hidden',
+            'name'     => 'wpsg-cf7-multistep',
+        ), $rejection);
+
+        return $result;
+    }
+
+    /**
+     * 確認ステップで止めたとき、画面の文言（REST 送信の応答）を理由に合わせて差し替える。★v2.11.1
+     * 既定の「入力内容に問題があります」では、確認画面のどこを直せばよいか分からないため。
+     */
+    public function cf7_multistep_feedback_response($response, $result = null) {
+        if ($this->cf7_multistep_rejection !== null && is_array($response)
+            && isset($response['status']) && $response['status'] === 'validation_failed') {
+            $response['message'] = $this->cf7_multistep_rejection;
+        }
+        return $response;
+    }
+
+    /**
+     * JS なしの通常 POST でも同じ文言を出す（フォームの再描画は submission の応答文を使う）。★v2.11.1
+     */
+    public function cf7_multistep_submit_response($contact_form, $result = array()) {
+        if ($this->cf7_multistep_rejection === null) {
+            return;
+        }
+        if (!is_array($result) || !isset($result['status']) || $result['status'] !== 'validation_failed') {
+            return;
+        }
+        if (!class_exists('WPCF7_Submission')) {
+            return;
+        }
+        $submission = WPCF7_Submission::get_instance();
+        if ($submission && method_exists($submission, 'set_response')) {
+            $submission->set_response($this->cf7_multistep_rejection);
+        }
+    }
+
+    /**
+     * 宛先が空の追加メール（メール(2) など）を送らない。★v2.11.1
+     * CF7 は本メール（管理者宛）が送れた後、追加メールだけをこのフィルタに通す。
+     * 宛先の項目が空のまま wp_mail に渡ると「You must provide at least one recipient email address.」で失敗し、
+     * Easy WP SMTP などに送信エラーが残る。届け先の無いメールは送っても失敗するだけなので、ここで外す。
+     */
+    public function drop_cf7_mail_without_recipient($additional_mail, $contact_form = null) {
+        if (!is_array($additional_mail) || !function_exists('wpcf7_mail_replace_tags')) {
+            return $additional_mail;
+        }
+        foreach ($additional_mail as $key => $template) {
+            if (!is_array($template)) {
+                continue;
+            }
+            $recipient = isset($template['recipient']) ? (string) $template['recipient'] : '';
+            if ($this->cf7_has_valid_address(wpcf7_mail_replace_tags($recipient))) {
+                continue;
+            }
+            // 宛先が空でも、追加ヘッダーの Cc / Bcc に届け先があれば wp_mail は送れる
+            $headers = isset($template['additional_headers']) ? (string) $template['additional_headers'] : '';
+            if ($headers !== '' && preg_match_all('/^\s*(?:cc|bcc)\s*:(.*)$/im', wpcf7_mail_replace_tags($headers), $m)) {
+                foreach ($m[1] as $line) {
+                    if ($this->cf7_has_valid_address($line)) {
+                        continue 2;
+                    }
+                }
+            }
+            unset($additional_mail[$key]);
+        }
+        return $additional_mail;
+    }
+
+    /**
+     * 宛先の文字列（「a@x, 名前 <b@y>」の形）に、メールアドレスとして正しいものが1つでもあるか。
+     */
+    private function cf7_has_valid_address($list) {
+        foreach (explode(',', (string) $list) as $part) {
+            $part = trim($part);
+            if (preg_match('/<([^>]*)>/', $part, $m)) {
+                $part = trim($m[1]);
+            }
+            if ($part !== '' && is_email($part)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 値が空か（配列なら中身がすべて空か）。
+     */
+    private function cf7_is_blank($value) {
+        if (is_array($value)) {
+            foreach ($value as $v) {
+                if (!$this->cf7_is_blank($v)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (is_scalar($value)) {
+            return trim((string) $value) === '';
+        }
+        return true;
+    }
+
+    /**
+     * フォームの [multiform 項目名] から、前の段から引き継ぐ項目名を集める。
+     * multistep は multiform を name-attr なしで登録しているので、項目名は
+     * 引用符つきの値 → name → 先頭のオプション の順に探す（multistep の表示処理と同じ順）。
+     * タグとして認識されない場合（multistep が止まっている等）はフォーム本文から拾う。
+     */
+    private function cf7_multiform_fields($contact_form) {
+        $names = array();
+
+        if (method_exists($contact_form, 'scan_form_tags')) {
+            foreach (array('multiform', 'multiform*') as $type) {
+                foreach ((array) $contact_form->scan_form_tags(array('type' => $type)) as $tag) {
+                    $name = $this->cf7_multiform_field_name($tag);
+                    if ($name !== '') {
+                        $names[] = $name;
+                    }
+                }
+            }
+        }
+
+        if (!$names && method_exists($contact_form, 'prop')) {
+            $body = (string) $contact_form->prop('form');
+            if (preg_match_all('/\[multiform\*?\s+([^\]]*)\]/', $body, $m)) {
+                foreach ($m[1] as $inner) {
+                    $name = '';
+                    if (preg_match('/"([^"]+)"|\'([^\']+)\'/', $inner, $q)) {
+                        $name = (isset($q[1]) && $q[1] !== '') ? $q[1] : (isset($q[2]) ? $q[2] : '');
+                    } else {
+                        $tokens = preg_split('/\s+/', trim($inner));
+                        $name = isset($tokens[0]) ? $tokens[0] : '';
+                    }
+                    if ($name !== '') {
+                        $names[] = $name;
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    private function cf7_multiform_field_name($tag) {
+        if (!empty($tag->values)) {
+            $values = (array) $tag->values;
+            $value = reset($values);
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+        if (!empty($tag->name) && is_string($tag->name)) {
+            return $tag->name;
+        }
+        if (!empty($tag->options)) {
+            $options = (array) $tag->options;
+            $option = reset($options);
+            if (is_string($option)) {
+                return trim($option);
+            }
+        }
+        return '';
     }
 
     // =====================================================================
